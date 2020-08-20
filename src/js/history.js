@@ -1,20 +1,13 @@
-import createHistory from 'history/createBrowserHistory'
-
+import * as analytics from './utils/analytics'
 
 //const history = createHistory()
+const createHistory = require("history").createBrowserHistory
 const history = createHistory({
   basename: '',
   hashType: 'slash',
 })
+
 history.listen(function (location) {
-  if (typeof window.ga === 'function') {
-    try {
-      console.log(location.pathname + location.search)
-      window.ga('set', 'page', location.pathname + location.search)
-      window.ga('send', 'pageview')
-    } catch (e) {
-      console.log(e)
-    }
-  }
+  analytics.changePath(location.pathname + location.search)
 })
 export default history
