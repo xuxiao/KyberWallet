@@ -1,5 +1,6 @@
 import BigNumber from 'bignumber.js'
 import constants from "../services/constants"
+import { compareTwoNumber } from "./converter";
 
 export function verifyAccount(addr) {
   var valid = /^0x[0-9a-fA-F]{40}$/.test(addr)
@@ -23,8 +24,8 @@ export function verifyAmount(sourceAmount,
   balance,
   sourceSymbol,
   sourceDecimal,
-  rate, destDecimal, maxCap) {
-  //verify number for source amount
+  rate, destSymbol, destDecimal, maxCap) {
+
   var testAmount = parseFloat(sourceAmount)
   if (isNaN(testAmount)) {
     return "not a number"
@@ -33,8 +34,37 @@ export function verifyAmount(sourceAmount,
   if (sourceAmountWei == 'NaN' || sourceAmountWei == 'Infinity') {
     return "not a number"
   }
-  var weiParam = new BigNumber(10)
-  sourceAmountWei = sourceAmountWei.times(weiParam.pow(sourceDecimal))
+  //var weiParam = new BigNumber(10)
+  sourceAmountWei = sourceAmountWei.times(Math.pow(10, sourceDecimal))
+
+
+  //verify min source amount
+  var rateBig = new BigNumber(rate)
+  var estimateValue = sourceAmountWei
+  if (sourceSymbol !== "ETH") {
+    estimateValue = rateBig.times(sourceAmountWei).div(Math.pow(10, sourceDecimal))
+  }
+  var epsilon = new BigNumber(constants.EXCHANGE_CONFIG.EPSILON)
+  var delta = estimateValue.minus(epsilon).abs()
+  var acceptDetal = new BigNumber(constants.EXCHANGE_CONFIG.MIN_ACCEPT_DELTA)
+
+  if (compareTwoNumber(rateBig, 0) === 1 && estimateValue.isLessThan(epsilon) && !delta.div(epsilon).isLessThan(acceptDetal)) {
+    return "too small"
+  }
+
+  //verify max cap
+  //estimate value based on eth
+  if ((sourceSymbol !== "ETH" || destSymbol !== "WETH") && (sourceSymbol !== "WETH" || destSymbol !== "ETH")){
+    if (maxCap !== "infinity") {
+      var maxCap = new BigNumber(maxCap)
+      if (sourceSymbol !== "ETH") {
+        maxCap = maxCap.multipliedBy(constants.EXCHANGE_CONFIG.MAX_CAP_PERCENT)
+      }
+      if (estimateValue.isGreaterThan(maxCap)) {
+        return "too high cap"
+      }
+    }
+  }
 
   //verify balance for source amount
   var sourceBalance = new BigNumber(balance)
@@ -45,54 +75,29 @@ export function verifyAmount(sourceAmount,
     return "too high"
   }
 
-  //verify min source amount
-  var rateBig = new BigNumber(rate)
-  var estimateValue = sourceAmountWei
-  if (sourceSymbol !== "ETH") {
-    estimateValue = rateBig.times(sourceAmountWei).div(weiParam.pow(sourceDecimal))
-  }
-  var epsilon = new BigNumber(constants.EPSILON)
-  if (estimateValue.isLessThan(epsilon)) {
-    return "too small"
-  }
 
-  //verify max cap
-  //estimate value based on eth
-  var maxCap = new BigNumber(maxCap)
-  if(sourceSymbol !=="ETH"){
-    maxCap = maxCap.multipliedBy(constants.MAX_CAP_PERCENT)
-  }
-  if (estimateValue.isGreaterThan(maxCap)) {
-    return "too high cap"
-  }
   return null
 }
 
-export function verifyBalanceForTransaction(
-  ethBalance, sourceSymbol, sourceAmount, 
-  gas, gasPrice
-) {
+export function verifyBalanceForTransaction(ethBalance, sourceSymbol, sourceAmount, gas, gasPrice) {
+  var bigEthBalance = new BigNumber(ethBalance.toString())
 
-  var bigEthBalance = new BigNumber(ethBalance)
+  if (typeof gasPrice === "undefined" || gasPrice === "") gasPrice = 0
 
-  //calcualte tx fee
-  if (gasPrice === "") gasPrice = 0
-  var gasPriceBig = new BigNumber(gasPrice)
+  var gasPriceBig = new BigNumber(gasPrice.toString())
   var txFee = gasPriceBig.times(1000000000).times(gas)
-
   var totalFee
-  if (sourceSymbol === "ETH"){
-    console.log(sourceAmount)
+
+  if (sourceSymbol === "ETH") {
     if (sourceAmount === "") sourceAmount = 0
-    var value = new BigNumber(sourceAmount)
+    var value = new BigNumber(sourceAmount.toString())
     value = value.times(1000000000000000000)
     totalFee = txFee.plus(value)
-  } else{
+  } else {
     totalFee = txFee
-  } 
-  
+  }
 
-  if (totalFee.isGreaterThan(bigEthBalance)){
+  if (totalFee.isGreaterThan(bigEthBalance)) {
     return "not enough"
   }
 
@@ -138,7 +143,11 @@ export function filterInputNumber(event, value, preVal) {
     if (strRemoveText.indexOf('.') != i) val = ''
     return val
   })
+  if(str === "."){
+    str = "0."
+  }
   event.target.value = str
-  if(preVal == str) return false
+
+  if (preVal === str) return false
   return true
 }

@@ -1,52 +1,120 @@
 import * as keyService from "./baseKey"
 import EthereumTx from "ethereumjs-tx"
-import { signLedgerTransaction, connectLedger } from "../../services/device/device"
 import * as ethUtil from 'ethereumjs-util'
-
+import TransportU2F from "@ledgerhq/hw-transport-u2f";
+import Eth from "@ledgerhq/hw-app-eth";
 import { store } from "../../store"
 import { CONFIG_ENV_LEDGER_LINK, LEDGER_SUPPORT_LINK } from "../constants"
 import { getTranslate } from 'react-localize-redux'
-
-const defaultDPath = "m/44'/60'/0'";
+import EthereumService from "../ethereum/ethereum"
 
 export default class Ledger {
-  
-  getPublicKey = (path = defaultDPath, isOpenModal) => {
+  connectLedger = () => {
+    return new Promise((resolve, reject) => {
+      TransportU2F.create(20000).then(transport => {
+        var eth = new Eth(transport)
+        resolve(eth)
+      }).catch(e => {
+        console.log(e)
+        reject(e)
+      })
+    });
+  }
+
+  signLedgerTransaction = (eth, path, raxTxHex) => {
+    return new Promise((resolve, reject) => {
+      eth.signTransaction(path, raxTxHex)
+        .then((result) => {
+          resolve(result)
+        })
+        .catch((err) => {
+          console.log(err)
+          reject(err)
+        });
+
+    });
+  }
+
+  getLedgerPublicKey = (eth, path) => {
+    return new Promise((resolve, reject) => {
+      eth.getAddress(path, false, true)
+        .then((result) => {
+          resolve(result)
+        })
+        .catch((err) => {
+          reject(err)
+        });
+    });
+  }
+
+  getPublicKey = (path, isOpenModal) => {
     var translate = getTranslate(store.getState().locale)
     return new Promise((resolve, reject) => {
-      connectLedger().then((eth) => {
-        eth.getAddress_async(path, false, true)
+      this.connectLedger().then((eth) => {
+        this.getLedgerPublicKey(eth, path)
           .then((result) => {
             result.dPath = path;
             resolve(result);
           })
-          .fail((err) => {
+          .catch((err) => {
             let errorMsg
-            switch (err) {
-              case 'Invalid status 6801':
+            switch (err.statusCode) {
+              case 26625:
                 if (isOpenModal) {
                   errorMsg = translate("error.invalid_path_or_session_expired") || 'Cannot get address from this path. Please check your path is valid or Ledger is connected.'
                 } else {
                   errorMsg = translate("error.ledger_time_out") || 'Your session on Ledger is expired. Please log in  again to continue.'
                 }
                 break
-              case 'Invalid status 6a80':
-              case 'Invalid status 6804':
-                errorMsg = translate("error.path_is_invalid") || 'Invalid path. Please choose another one.'
-                break
               default:
-                if(err.errorCode == 1){
-                  let link = CONFIG_ENV_LEDGER_LINK
-                  errorMsg = translate("error.need_to_config_env_ledger", {link: link})
-                }else{
-                  let link = LEDGER_SUPPORT_LINK
-                  errorMsg = translate("error.ledger_global_err", {link: link})
+                if (err.errorCode == 1) {
+                  errorMsg = translate("error.need_to_config_env_ledger", { link: CONFIG_ENV_LEDGER_LINK })
+                } else {
+                  errorMsg = translate("error.ledger_global_err", { link: LEDGER_SUPPORT_LINK })
                 }
             }
             reject(errorMsg)
           });
-      });
+      }).catch(e => {
+        reject(translate("error.ledger_global_err", { link: LEDGER_SUPPORT_LINK }))
+      })
     });
+  }
+
+  async signSignature(message, account) {
+    try {
+      var eth = await this.connectLedger()
+      var signature = await eth.signPersonalMessage(account.keystring, message.substring(2))
+
+      var v = signature['v'];
+      v = v.toString(16);
+      if (v.length < 2) {
+        v = "0" + v;
+      }
+
+      return "0x" + signature.r + signature.s + v;
+    } catch (err) {
+      console.log(err)
+      throw err
+    }
+  }
+
+  async broadCastTx(funcName, ...args) {
+    try {
+      var txRaw = await this.callSignTransaction(funcName, ...args)
+      try {
+        var ethereum = new EthereumService()
+        var txHash = await ethereum.callMultiNode("sendRawTransaction", txRaw)
+        return txHash
+      } catch (err) {
+        console.log(err)
+        throw err
+      }
+
+    } catch (err) {
+      console.log(err)
+      throw err
+    }
   }
 
   callSignTransaction = (funcName, ...args) => {
@@ -61,24 +129,21 @@ export default class Ledger {
         })
       })
     })
-    // const { txParams, keystring, } = keyService[funcName](...args)
-    // txParams.address_n = keystring
-    // return this.sealTx(txParams)
   }
 
-  getLedgerError(errorCode){
+  getLedgerError(error) {
     let translate = getTranslate(store.getState().locale)
-    switch(errorCode){
-      case 'Invalid status 6a80' : {
+    switch (error.statusCode) {
+      case 27264: {
         let link = 'https://support.ledgerwallet.com/hc/en-us/articles/115005200709'
-        return translate('error.ledger_not_enable_contract', {link: link})
+        return translate('error.ledger_not_enable_contract', { link: link })
       }
-      case 'Invalid status 6985' : {
-        return 
+      case 27013: {
+        return ""
       }
-      default : {
+      default: {
         let link = LEDGER_SUPPORT_LINK
-        return translate("error.ledger_global_err", {link: link})
+        return translate("error.ledger_global_err", { link: link })
       }
     }
   }
@@ -88,22 +153,25 @@ export default class Ledger {
     eTx.raw[6] = Buffer.from([params.chainId])
     let txToSign = ethUtil.rlp.encode(eTx.raw)
     return new Promise((resolve, reject) => {
-      let timeout = 60
-      connectLedger(timeout).then((eth) => {
-        signLedgerTransaction(eth, params.address_n, txToSign.toString('hex')).then((response) => {
-          if (response.status) {
-            params.v = "0x" + response['v']
-            params.r = "0x" + response['r']
-            params.s = "0x" + response['s']
-            var tx = new EthereumTx(params)
-            resolve(tx);
-          } else {
-            reject(response.error)
-          }
+      this.connectLedger().then((eth) => {
+        this.signLedgerTransaction(eth, params.address_n, txToSign.toString('hex')).then((response) => {
+          params.v = "0x" + response['v']
+          params.r = "0x" + response['r']
+          params.s = "0x" + response['s']
+          var tx = new EthereumTx(params)
+          resolve(tx)
+        }).catch(err => {
+          console.log(err)
+          reject(err)
         })
       }).catch((err) => {
+        console.log(err)
         reject(err)
       })
     })
+  }
+  
+  getWalletName = () => {
+    return 'Ledger';
   }
 }
